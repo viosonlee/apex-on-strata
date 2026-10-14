@@ -13,14 +13,19 @@
 
 ## 实测（RTX 2060 6GB / i7-9700 / 32GB RAM）
 
-| 模型 | 配置 | decode | 专家缓存命中 |
-|---|---|---|---|
-| APEX-MTP-Compact | 无 MTP | 19–23 tok/s | 0.80 |
-| APEX-MTP-Compact | **MTP（spec 2）** | **25–29 tok/s** | 0.59–0.65 |
-| **APEX-I-Mini**（IQ2_S down + Q3_K，无 MTP） | 无 MTP | **18.3 tok/s** | **0.85** |
+| 模型 | 配置 | decode | prefill（1038 token） | 专家缓存命中 |
+|---|---|---|---|---|
+| APEX-MTP-Compact | 无 MTP | 19–23 tok/s | ~740 tok/s（Q3_K MMQ） | 0.80 |
+| APEX-MTP-Compact | **MTP（spec 2）** | **25–29 tok/s** | 同上 | 0.59–0.65 |
+| **APEX-I-Mini**（IQ2_S down + Q3_K，无 MTP） | 无 MTP | **18.3 tok/s** | ~750 tok/s（Q3_K MMQ） | **0.85** |
 
 Mini 是 13.3GB 文件（比 Compact 小 2.8GB），内存紧张的机器（24GB 笔记本）首选。
-两者都比 llama.cpp 同模型（6–12 tok/s）快 1.5–3 倍。
+两者 decode 都比 llama.cpp 同模型（6–12 tok/s）快 1.5–3 倍。
+
+**Q3_K prefill MMQ**：本 fork 把 Q3_K 加入 llama.cpp 的 MMQ 提示词路径（`mmq-instance-q3_k.cu` +
+`moe_mmq.cu` 的 supported/run 两个 switch）。修复前 Q3_K 专家层的 prompt 走 fp16 去量化回退
+（~370–440 tok/s），现在 **~740–750 tok/s，约 2 倍**。注意 MMQ 与回退路径不是位级相同（上游
+文档已注明 batch split 非数值中性），输出可能略有差异。
 
 ## 与上游的差异（本 fork 改了什么）
 
@@ -28,10 +33,11 @@ Mini 是 13.3GB 文件（比 Compact 小 2.8GB），内存紧张的机器（24GB
 |---|---|---|---|
 | 1 | `src/kernels/cuda/iq_kernels.cu` | 移植 llama.cpp `vec_dot_q3_K_q8_1` + `Fmt<11>`，Q3_K 加入 `STRATA_GU_FMTS` / `STRATA_D_FMTS` / `STRATA_MMVQ_FMTS` | APEX 的专家是逐层 Q3_K/Q4_K 混合，上游 GPU 专家 kernel 没有 Q3_K 模板 |
 | 2 | `src/kernels/cuda/iq_kernels.cu` | IQ2_S 加入 `STRATA_D_FMTS`；`embed_type_supported` 放行 K-quant | APEX-I-Mini 的 down 投影是 IQ2_S；`token_embd.weight` 是 Q4_K |
-| 3 | `include/strata/artifact/gguf_reader.hpp` | 架构守卫改为结构性检查：block_count 40（纯主干）和 41（含 MTP 块）都合法，并用 MTP 张量的存在性交叉验证 | 上游硬编码 41，拒绝无 MTP 的 APEX-I-Mini 文件 |
-| 4 | `tools/apex_mtp_rt.py`（新增） | 从模型的 blk.40（DeepSeek 式 nextn 块）提取 Strata 草稿器运行时（dense.bin/dense.txt/experts.bin），按专家流式转换 | 上游 `mtp_rt.py` 只支持 Qwen3.8-Flash-Next 检查点的 donor 格式 |
-| 5 | `tools/apex_requant_experts.py`（新增，备选） | 把 Q3_K 专家重排为 Q4_K 的 GGUF 流式重写器 | 若不想改 kernel，可用它重排模型（本 fork 最终走了 kernel 路线，此工具留作备选） |
-| 6 | `build-apex.cmd`（新增） | Windows 一键配置+编译：自动找 VS（vswhere）和 CUDA Toolkit，架构作参数传入 | 方便复现，无硬编码路径 |
+| 3 | `src/prefill/moe_mmq.cu` + `CMakeLists.txt` | Q3_K 加入 prefill MMQ（`mmq-instance-q3_k.cu` + supported/run 两个 switch） | ~31/40 层的 prompt 从 fp16 回退（370-440 tok/s）提到 MMQ 的 ~740-750 tok/s |
+| 4 | `include/strata/artifact/gguf_reader.hpp` | 架构守卫改为结构性检查：block_count 40（纯主干）和 41（含 MTP 块）都合法，并用 MTP 张量的存在性交叉验证 | 上游硬编码 41，拒绝无 MTP 的 APEX-I-Mini 文件 |
+| 5 | `tools/apex_mtp_rt.py`（新增） | 从模型的 blk.40（DeepSeek 式 nextn 块）提取 Strata 草稿器运行时（dense.bin/dense.txt/experts.bin），按专家流式转换 | 上游 `mtp_rt.py` 只支持 Qwen3.8-Flash-Next 检查点的 donor 格式 |
+| 6 | `tools/apex_requant_experts.py`（新增，备选） | 把 Q3_K 专家重排为 Q4_K 的 GGUF 流式重写器 | 若不想改 kernel，可用它重排模型（本 fork 最终走了 kernel 路线，此工具留作备选） |
+| 7 | `build-apex.cmd`（新增） | Windows 一键配置+编译：自动找 VS（vswhere）和 CUDA Toolkit，架构作参数传入 | 方便复现，无硬编码路径 |
 
 ## 支持范围
 
@@ -99,7 +105,6 @@ MTP 移植要点（`tools/apex_mtp_rt.py` 的映射依据，llama.cpp `qwen35moe
 - `--spec 3` 及以上不划算（起草成本 8.8ms/轮超过收益），用 `--spec 2`
 - Q3_K / IQ2_S kernel 数值只做了"输出合理"级验证，未做与 llama.cpp 的逐 token 贪心对照
   （上游 `docs/cyber/04-correctness.md` 的流程适用）
-- Q3_K 专家的 prefill 走非 MMQ 回退路径（MMQ 表无 Q3_K），长 prompt 填充速度有提升空间
 
 ## 许可
 

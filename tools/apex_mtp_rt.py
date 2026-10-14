@@ -5,21 +5,22 @@ writes for the reference donor.
 
     python tools/apex_mtp_rt.py --gguf <APEX-MTP-Compact.gguf> --out <dir>
 
-Name mapping (verified against MtpDrafter's geometry self-check, src/core/mtp.cpp):
-  fc_embedding.weight                     <- nextn.eh_proj[0:N, :]        (Q8_0)
-  fc_hidden.weight                        <- nextn.eh_proj[N:2N, :]       (Q8_0)
-  pre_fc_norm_embedding.weight            <- nextn.enorm                  (F32, +1)
-  pre_fc_norm_hidden.weight               <- nextn.hnorm                  (F32, +1)
-  attn_hyper_connection.hc_norm.weight    <- attn_norm                    (F32, +1; plain reads the first N)
-  mlp_hyper_connection.hc_norm.weight     <- post_attention_norm          (F32, +1)
-  hyper_connection_mixer.hc_norm.weight   <- nextn.shared_head_norm       (F32, +1)
+Name mapping (verified against MtpDrafter's geometry self-check, src/core/mtp.cpp, and llama.cpp's
+qwen35moe.cpp nextn forward @ 3cf03257f):
+  fc_embedding.weight                     <- nextn.eh_proj[:, 0:N]        (Q8_0; concat is [e_norm | h_norm])
+  fc_hidden.weight                        <- nextn.eh_proj[:, N:2N]       (Q8_0)
+  pre_fc_norm_embedding.weight            <- nextn.enorm                  (F32, PLAIN RMSNorm - no Gemma '+1')
+  pre_fc_norm_hidden.weight               <- nextn.hnorm                  (F32, PLAIN RMSNorm)
+  attn_hyper_connection.hc_norm.weight    <- attn_norm                    (F32, PLAIN; plain reads the first N)
+  mlp_hyper_connection.hc_norm.weight     <- post_attention_norm          (F32, PLAIN)
+  hyper_connection_mixer.hc_norm.weight   <- nextn.shared_head_norm       (F32, PLAIN)
   self_attn.q/k/v_proj.weight             <- attn_q/k/v.weight            (Q8_0)
   self_attn.o_proj.weight                 <- attn_output.weight           (Q8_0)
   self_attn.q_norm / k_norm.weight        <- attn_q_norm / attn_k_norm    (F32)
-  mlp.gate.weight                         <- ffn_gate_inp.weight          (BF16)
+  mlp.gate.weight                         <- ffn_gate_inp.weight          (BF16, real F32->BF16 RNE)
   mlp.shared_expert_gate.weight           <- ffn_gate_inp_shexp.weight    (BF16, 1 x N)
   mlp.shared_expert.{gate,up,down}_proj   <- ffn_{gate,up,down}_shexp     (Q8_0, verbatim)
-  experts.bin                             <- ffn_{gate,up,down}_exps      (Q8_0, blob layout)
+  experts.bin                             <- ffn_{gate,up,down}_exps      (Q8_0 -> Q2_0 blob, per expert)
 """
 from __future__ import annotations
 
@@ -44,7 +45,9 @@ KQK = 64                            # q8_0 block: 32 values + 2-byte scale
 
 
 def read_gguf_raw(path: str):
-    """Minimal GGUF v3 reader: returns ({name: (type_id, dims, bytes)}, data_start)."""
+    """Minimal GGUF v3 reader: index only.  Returns ({name: (type_id, dims, file_offset)}, data_start).
+    NOTHING is read into memory here - the callers read the spans they need through `open_span`.
+    (An earlier version read all 16 GB to serve 3 tensors; on a 24 GB machine that alone could OOM.)"""
     f = open(path, "rb")
     assert f.read(4) == b"GGUF", "not a GGUF file"
     (ver,) = struct.unpack("<I", f.read(4))
@@ -75,7 +78,6 @@ def read_gguf_raw(path: str):
         t = struct.unpack("<I", f.read(4))[0]
         rv(t)
     tensors = {}
-    off = f.tell()
     for _ in range(n_tensors):
         name = rs()
         nd = struct.unpack("<I", f.read(4))[0]
@@ -85,42 +87,37 @@ def read_gguf_raw(path: str):
         tensors[name] = (tt, dims, toff)
     data_start = f.tell()
     payload = f.seek(0, 2) - data_start
-
-    from gguf import GGMLQuantizationType as Q
-
-    def span(name):
-        tt, dims, toff = tensors[name]
-        from gguf import GGML_QUANT_SIZES
-        qk, tySize = GGML_QUANT_SIZES[Q(tt)]
-        n = 1
-        for d in dims: n *= d
-        nbytes = n // qk * tySize
-        if toff + nbytes > payload:
-            raise MemoryError(f"{name}: runs past the end of the file")
-        return tt, dims, data_start + toff, nbytes
-
     f.close()
 
-    def read_span(name):
-        tt, dims, at, nbytes = span(name)
-        with open(a_gguf_path, "rb") as g:
-            g.seek(at)
-            return tt, dims, g.read(nbytes)
+    from gguf import GGMLQuantizationType as Q, GGML_QUANT_SIZES
 
-    a_gguf_path = path
-    out = {}
+    def tensor_bytes(tt, dims):
+        qk, tySize = GGML_QUANT_SIZES[Q(tt)]
+        n = 1
+        for d in dims:
+            n *= d
+        return n // qk * tySize
 
-    class _Lazy:
-        __slots__ = ("t", "d", "b")
+    def open_span(name):
+        """Returns a context manager yielding (type_id, dims, file-object positioned at the data)."""
+        tt, dims, toff = tensors[name]
+        nbytes = tensor_bytes(tt, dims)
+        if toff + nbytes > payload:
+            raise MemoryError(f"{name}: runs past the end of the file")
 
-        def __init__(self, t, d, b): self.t, self.d, self.b = t, d, b
+        class Span:
+            def __enter__(self):
+                self.f = open(path, "rb")
+                self.f.seek(data_start + toff)
+                return tt, dims, self.f
 
-        def __iter__(self):
-            return iter((self.t, self.d, self.b))
+            def __exit__(self, *exc):
+                self.f.close()
+                return False
 
-    for name in tensors:
-        out[name] = _Lazy(*read_span(name))
-    return out, data_start
+        return Span()
+
+    return tensors, tensor_bytes, open_span
 
 
 def dequant(ttype, dims, data):
@@ -142,8 +139,21 @@ def q8_0(x: np.ndarray) -> bytes:
     return out.tobytes()
 
 
-def gemma_norm(w: np.ndarray) -> bytes:
-    return (np.asarray(w, dtype=np.float32) + 1.0).tobytes()
+def norm_plain(w: np.ndarray) -> bytes:
+    """Qwen3.6 MTP norms are PLAIN RMSNorm weights (llama.cpp LLM_NORM_RMS: y = w * norm(x)).
+    The reference donor (Qwen3.8-Flash-Next checkpoint) needed the vLLM Gemma '+1'; this body does NOT."""
+    return np.asarray(w, dtype=np.float32).tobytes()
+
+
+def to_bf16(f32: np.ndarray) -> np.ndarray:
+    """F32 -> BF16 with round-to-nearest-even (ggml's fp32_to_bf16).  A .view() is NOT a conversion:
+    it reinterprets the bytes, so [1.0, 2.0] f32 would read back as [0, 1, 0, 2] - twice the values,
+    twice the bytes.  RNE: round the low 16 bits into bit 16, on ties to even."""
+    u = np.ascontiguousarray(f32, dtype=np.float32).view(np.uint32)
+    # NaN/Inf keep their payload; finite values round the low half into the high half.
+    rounded = (u >> 16) & 1
+    u = (u >> 16) + rounded
+    return u.astype(np.uint16)
 
 
 def q2_0_q(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -190,13 +200,17 @@ def main() -> int:
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    tensors, _ = read_gguf_raw(a.gguf)
+    tensors, tensor_bytes, open_span = read_gguf_raw(a.gguf)
 
     B = "blk.40."
-    eh = dequant(*tensors[B + "nextn.eh_proj.weight"])       # (2N, N) rows
+    with open_span(B + "nextn.eh_proj.weight") as (tt, dims, f):
+        eh = dequant(tt, dims, f.read(tensor_bytes(tt, dims)))   # (N, 2N) rows
     assert eh.shape == (H, 2 * H), eh.shape
     lines, off = [], 0
-    dense = open(out / "dense.bin", "wb")
+    # write to temporary names and rename at the end: an interrupted run must not leave a dense.bin
+    # that reads as finished (the engine refuses dense.bin without dense.txt, but be tidy anyway)
+    dense_path, dense_tmp = out / "dense.bin", out / "dense.bin.tmp"
+    dense = open(dense_tmp, "wb")
 
     def put(name, raw, kind, rows, cols):
         nonlocal off
@@ -206,42 +220,60 @@ def main() -> int:
         lines.append(f"{name} {kind} {rows} {cols} {off} {len(raw)}")
         off += len(raw)
 
+    def deq(name):
+        with open_span(name) as (tt, dims, f):
+            return dequant(tt, dims, f.read(tensor_bytes(tt, dims)))
+
     # ---- the two fc projections: eh_proj is (out N, in 2N); the input is [emb_norm | h_norm] concatenated,
     # so the LEFT half of the columns is the embedding branch and the RIGHT half the hidden branch.
     put("fc_embedding.weight", q8_0(eh[:, :H]), "q8_0", H, H)
     put("fc_hidden.weight", q8_0(eh[:, H:]), "q8_0", H, H)
-    put("pre_fc_norm_embedding.weight", gemma_norm(dequant(*tensors[B + "nextn.enorm.weight"])), "f32", 1, H)
-    put("pre_fc_norm_hidden.weight", gemma_norm(dequant(*tensors[B + "nextn.hnorm.weight"])), "f32", 1, H)
-    put("attn_hyper_connection.hc_norm.weight", gemma_norm(dequant(*tensors[B + "attn_norm.weight"])), "f32", 1, H)
-    put("mlp_hyper_connection.hc_norm.weight", gemma_norm(dequant(*tensors[B + "post_attention_norm.weight"])), "f32", 1, H)
-    put("hyper_connection_mixer.hc_norm.weight", gemma_norm(dequant(*tensors[B + "nextn.shared_head_norm.weight"])), "f32", 1, H)
-    put("self_attn.q_proj.weight", q8_0(dequant(*tensors[B + "attn_q.weight"])), "q8_0", N_HEAD * 2 * HEAD_DIM, H)
-    put("self_attn.k_proj.weight", q8_0(dequant(*tensors[B + "attn_k.weight"])), "q8_0", N_KV * HEAD_DIM, H)
-    put("self_attn.v_proj.weight", q8_0(dequant(*tensors[B + "attn_v.weight"])), "q8_0", N_KV * HEAD_DIM, H)
-    put("self_attn.o_proj.weight", q8_0(dequant(*tensors[B + "attn_output.weight"])), "q8_0", H, N_HEAD * HEAD_DIM)
-    put("self_attn.q_norm.weight", dequant(*tensors[B + "attn_q_norm.weight"]).astype(np.float32).tobytes(), "f32", 1, HEAD_DIM)
-    put("self_attn.k_norm.weight", dequant(*tensors[B + "attn_k_norm.weight"]).astype(np.float32).tobytes(), "f32", 1, HEAD_DIM)
-    put("mlp.gate.weight", dequant(*tensors[B + "ffn_gate_inp.weight"]).view(np.uint16).tobytes(), "bf16", NE, H)
-    put("mlp.shared_expert_gate.weight", dequant(*tensors[B + "ffn_gate_inp_shexp.weight"]).view(np.uint16).tobytes(), "bf16", 1, H)
-    put("mlp.shared_expert.gate_proj.weight", tensors[B + "ffn_gate_shexp.weight"].b, "q8_0", H, FF)
-    put("mlp.shared_expert.up_proj.weight", tensors[B + "ffn_up_shexp.weight"].b, "q8_0", H, FF)
-    put("mlp.shared_expert.down_proj.weight", tensors[B + "ffn_down_shexp.weight"].b, "q8_0", FF, H)
+    put("pre_fc_norm_embedding.weight", norm_plain(deq(B + "nextn.enorm.weight")), "f32", 1, H)
+    put("pre_fc_norm_hidden.weight", norm_plain(deq(B + "nextn.hnorm.weight")), "f32", 1, H)
+    put("attn_hyper_connection.hc_norm.weight", norm_plain(deq(B + "attn_norm.weight")), "f32", 1, H)
+    put("mlp_hyper_connection.hc_norm.weight", norm_plain(deq(B + "post_attention_norm.weight")), "f32", 1, H)
+    put("hyper_connection_mixer.hc_norm.weight", norm_plain(deq(B + "nextn.shared_head_norm.weight")), "f32", 1, H)
+    put("self_attn.q_proj.weight", q8_0(deq(B + "attn_q.weight")), "q8_0", N_HEAD * 2 * HEAD_DIM, H)
+    put("self_attn.k_proj.weight", q8_0(deq(B + "attn_k.weight")), "q8_0", N_KV * HEAD_DIM, H)
+    put("self_attn.v_proj.weight", q8_0(deq(B + "attn_v.weight")), "q8_0", N_KV * HEAD_DIM, H)
+    put("self_attn.o_proj.weight", q8_0(deq(B + "attn_output.weight")), "q8_0", H, N_HEAD * HEAD_DIM)
+    put("self_attn.q_norm.weight", deq(B + "attn_q_norm.weight").astype(np.float32).tobytes(), "f32", 1, HEAD_DIM)
+    put("self_attn.k_norm.weight", deq(B + "attn_k_norm.weight").astype(np.float32).tobytes(), "f32", 1, HEAD_DIM)
+    put("mlp.gate.weight", to_bf16(deq(B + "ffn_gate_inp.weight")).tobytes(), "bf16", NE, H)
+    put("mlp.shared_expert_gate.weight", to_bf16(deq(B + "ffn_gate_inp_shexp.weight")).tobytes(), "bf16", 1, H)
+    # the shared expert projections are ALREADY Q8_0 in the GGUF: copy verbatim
+    put("mlp.shared_expert.gate_proj.weight", read_raw(open_span, B + "ffn_gate_shexp.weight"), "q8_0", H, FF)
+    put("mlp.shared_expert.up_proj.weight", read_raw(open_span, B + "ffn_up_shexp.weight"), "q8_0", H, FF)
+    put("mlp.shared_expert.down_proj.weight", read_raw(open_span, B + "ffn_down_shexp.weight"), "q8_0", FF, H)
     dense.close()
 
-    # ---- the 256 routed experts, blob layout: gate/up rows interleaved, then down.
-    gu_f = dequant(*tensors[B + "ffn_gate_exps.weight"])          # (NE, 2*FF, H) f32 (gate rows 0..FF-1, up FF..)
-    up_f = dequant(*tensors[B + "ffn_up_exps.weight"])
-    dn_f = dequant(*tensors[B + "ffn_down_exps.weight"])          # (NE, H, FF)
-    assert gu_f.shape == (NE, FF, H) and dn_f.shape == (NE, H, FF), (gu_f.shape, dn_f.shape)
-    # combine gate+up into the interleaved (2*FF, H) the blob wants
-    gu2 = np.empty((NE, 2 * FF, H), dtype=np.float32)
-    gu2[:, 0::2] = gu_f
-    gu2[:, 1::2] = up_f
-    blob_rows = []
-    for e in range(NE):
-        blob_rows.append(q2_0_blob(gu2[e], dn_f[e]))
-    (out / "experts.bin").write_bytes(b"".join(blob_rows))
-    experts_bytes = len(blob_rows[0]) * NE
+    # ---- the routed experts, blob layout: gate/up rows interleaved, then down.  ONE EXPERT AT A TIME
+    # (2 MiB working set per expert instead of ~2 GiB of f32 for all 256): peak memory stays flat on a
+    # 24 GB machine even with the OS file cache cold.
+    experts_tmp = out / "experts.bin.tmp"
+    n_done = 0
+    with open_span(B + "ffn_gate_exps.weight") as (t_g, d_g, f_g), \
+         open_span(B + "ffn_up_exps.weight") as (t_u, d_u, f_u), \
+         open_span(B + "ffn_down_exps.weight") as (t_d, d_d, f_d):
+        with open(experts_tmp, "wb") as fo:
+            per_gu = tensor_bytes(t_g, d_g) // NE      # one expert's Q8_0 bytes (gate and up are the same size)
+            per_dn = tensor_bytes(t_d, d_d) // NE
+            for e in range(NE):
+                # dequant with the PER-EXPERT dims: the GGUF dims (H, FF, NE) slice to (H, FF) per expert
+                gu_f = dequant(t_g, (d_g[0], d_g[1]), f_g.read(per_gu))
+                up_f = dequant(t_u, (d_u[0], d_u[1]), f_u.read(per_gu))
+                dn_f = dequant(t_d, (d_d[0], d_d[1]), f_d.read(per_dn))
+                assert gu_f.shape == (FF, H) and dn_f.shape == (H, FF), (gu_f.shape, dn_f.shape)
+                gu2 = np.empty((2 * FF, H), dtype=np.float32)
+                gu2[0::2] = gu_f
+                gu2[1::2] = up_f
+                fo.write(q2_0_blob(gu2, dn_f))
+                n_done += 1
+                if n_done % 32 == 0:
+                    print(f"  expert {n_done}/{NE}", flush=True)
+    (dense_tmp).replace(dense_path)
+    experts_tmp.replace(out / "experts.bin")
+    experts_bytes = BLOB * NE
 
     (out / "dense.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"experts.bin {experts_bytes} B (NE={NE}, per-expert {experts_bytes // NE}), dense.bin {off} B, "
@@ -249,5 +281,15 @@ def main() -> int:
     return 0
 
 
+def read_raw(open_span, name) -> bytes:
+    with open_span(name) as (tt, dims, f):
+        from gguf import GGMLQuantizationType as Q, GGML_QUANT_SIZES
+        qk, ty = GGML_QUANT_SIZES[Q(tt)]
+        n = 1
+        for d in dims: n *= d
+        return f.read(n // qk * ty)
+
+
 if __name__ == "__main__":
     sys.exit(main())
+

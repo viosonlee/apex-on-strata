@@ -1,5 +1,13 @@
 # 8 GB 显存跑 35B MoE · Cyber on Strata
 
+> ## ⚡ This fork: APEX quantized models on Strata
+>
+> **You are on the pex branch**: this fork makes **APEX quantized Qwen3.6-35B-A3B**
+> (e.g. APEX-MTP-Compact, decode **25-29 tok/s on an RTX 2060 6GB**) run on Strata, in
+> addition to the Cyber model below. Read **[APEX-README.md](APEX-README.md)** first;
+> prebuilt Windows binaries are under [Releases](../../releases). Everything else on this
+> page describes the upstream Cyber model and still applies.
+
 **一句话**：把 22.75 GB 的 **Cyber-Tiel-Coder-35B-A3B** 跑在 **8 GB 显存的显卡**上 ——
 专家权重留在内存、按需上卡，没命中 GPU 缓存的专家**就地交给 CPU 线程池算**。
 实测（RTX 4080 SUPER）：8 GB 档 **57.7–63.5 tok/s**，全常驻档 **134–136 tok/s**。

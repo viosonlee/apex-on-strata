@@ -2228,7 +2228,13 @@ int main(int argc, char** argv) {
     }
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
-        if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
+        // A --dump-routing trace run is a chicken-and-egg case: the profile is built FROM traces, so it cannot
+        // be required here, and the drafter's residency table does not exist yet.  Force spec 1 (no drafting)
+        // for the trace and keep the guard for real runs.
+        // NOTE: a --dump-routing trace run still needs --expert-profile and --spec 2 (the R4 residency table
+        // feeds the decode path even without a drafter).  Seed a profile with `make_profile.py --no-base`
+        // (an identity ranking) before the first trace.
+        if (o.native_preset.empty() || (o.dump_routing.empty() && (o.spec < 2 || o.keep_canonical)) ||
             (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());

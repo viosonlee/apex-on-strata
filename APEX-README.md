@@ -1,5 +1,12 @@
 # APEX on Strata
 
+> **Fork 说明**：本仓库 fork 自 [1314521gjy/cyber-on-strata](https://github.com/1314521gjy/cyber-on-strata)
+> （Strata 引擎的 Cyber-Tiel-Coder fork，MIT）。`main` 分支保留上游原样；
+> **`apex` 分支是全部改动**，本文件描述的就是 `apex` 分支的内容。
+>
+> **预编译版**：见 [Releases](../../releases) —— 下载 zip 解压即用（含 strata.exe + APEX 工具 + 使用说明），
+> 只需自备模型 GGUF 和 CUDA 13 运行时 DLL。
+
 在 [cyber-on-strata](https://github.com/1314521gjy/cyber-on-strata)（Strata 引擎 fork，MIT）基础上，
 让 **APEX 量化的 Qwen3.6-35B-A3B**（如 `Qwen3.6-35B-A3B-APEX-MTP-Compact`）也能跑 Strata 的
 专家流式推理。

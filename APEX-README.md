@@ -11,7 +11,13 @@
 让 **APEX 量化的 Qwen3.6-35B-A3B**（如 `Qwen3.6-35B-A3B-APEX-MTP-Compact`）也能跑 Strata 的
 专家流式推理。
 
-**实测**（RTX 2060 6GB / i7-9700 / 32GB RAM）：decode **19–23 tok/s**，专家缓存命中率 **0.80**，
+**实测**（RTX 2060 6GB / i7-9700 / 32GB RAM）：
+
+| 配置 | decode | 备注 |
+|---|---|---|
+| 无 MTP | 19–23 tok/s | 专家缓存命中 0.80 |
+| **MTP（spec 2）** | **25–26 tok/s** | 草稿接受率 0.44–0.46 |
+
 比 llama.cpp（同模型 `--n-cpu-moe` 分层卸载）约 6–12 tok/s 快 2 倍以上。
 
 ## 与上游的差异（本 fork 改了什么）
@@ -59,13 +65,22 @@ build-apex\strata.exe --pack pack-apex-compact --native <模型.gguf> --no-ple ^
   --pool-workers 6 --pool-affinity all --stats
 ```
 
-MTP 草稿（可选，目前接受率为 0，不推荐）：
+MTP 草稿（可用，`spec 2` 实测接受率 0.44–0.46，decode 25–26 tok/s）：
 
 ```bat
 python tools\apex_mtp_rt.py --gguf <带 blk.40 的模型.gguf> --out mtp-dir
 set STRATA_MTP_PLAIN=1
-:: 上面的命令加 --mtp mtp-dir --mtp-max-t 1
+:: 上面的命令加 --mtp mtp-dir，并注意：
+::  - 不要传 --mtp-max-t（它会把草稿数清零，"drafts accepted 0 of 0" 即此因）
+::  - spec 3 更慢（起草成本 8.8ms/轮超过收益），spec 2 是甜点
 ```
+
+MTP 移植要点（`tools/apex_mtp_rt.py` 的映射依据，llama.cpp `qwen35moe.cpp` @ 3cf03257f）：
+
+- `eh_proj` 是 `(N, 2N)`，输入为 `concat(e_norm, h_norm)` —— 左半列是 embedding 分支
+- **norm 是普通 RMSNorm（`LLM_NORM_RMS`），不要加 Gemma 式 "+1"**（那是对旧 donor 检查点的，
+  加了就是接受率 0 的来源）
+- 草稿专家按引擎 Q2_0 blob 布局重排（Q8_0 源重排，有轻微精度损失，接受率 ~0.45 可接受）
 
 ## 参数提示
 
@@ -75,8 +90,9 @@ set STRATA_MTP_PLAIN=1
 
 ## 已知问题
 
-- MTP 草稿头：`apex_mtp_rt.py` 的 `eh_proj` 分支映射或 Q2_0 重排精度待修正，
-  草稿被提出但接受率 0。修好前 `--mtp` 是纯开销
+- MTP 草稿接受率 0.44–0.46（上游 Cyber 参考值 0.55–0.58）——大概率是 Q8_0→Q2_0 草稿专家
+  重排的精度损失；若追求更高接受率需给草稿器加 Q8_0 blob 路径（引擎改动）
+- `--spec 3` 及以上不划算（起草成本超过收益），用 `--spec 2`
 - Q3_K kernel 数值只做了"输出合理"级验证，未做与 llama.cpp 的逐 token 贪心对照
   （上游 `docs/cyber/04-correctness.md` 的流程适用）
 

@@ -1,0 +1,75 @@
+APEX on Strata - quick start (Windows, RTX 20/30 series)
+========================================================
+
+What is in this folder
+  engine\strata.exe            the engine (sm_75 + sm_86, CUDA 13 DLLs included)
+  engine\tokenize\             llama-tokenize + vocab_bytes.tsv (prompt in/out)
+  tools\                       iq_pack / make_profile / apex_mtp_rt / apex_requant_experts
+  LlamaManager.exe             the launcher GUI (self-contained; see "GUI" below)
+  profile\apex-compact-40x256.bin   expert routing profile FOR APEX-MTP-Compact
+  profile\profile-occamy.bin        expert routing profile FOR Occamy-1.0.APEX-I-MiniPlus
+  pack-occamy\                 ready-made native pack FOR Occamy-1.0.APEX-I-MiniPlus-V2.1-Abliterated.gguf
+  mtp-apex-compact\            ready-made MTP draft runtime FOR APEX-MTP-Compact
+  models\                      put your model GGUFs here (NOT included)
+  README-APEX.md               full documentation (support scope, MTP notes, known issues)
+
+A pack belongs to ONE exact GGUF. pack-occamy was built from
+Occamy-1.0.APEX-I-MiniPlus-V2.1-Abliterated.gguf - use it with that file.
+
+SUPPORTED MODELS (qwen35moe 35B-A3B family, various quantizations)
+  The engine is NOT limited to the three models below. Any qwen35moe GGUF
+  (40-layer trunk, 41 with MTP; hidden 2048) whose expert quantization is in
+  the GPU-supported list works: Q3_K Q4_K Q5_K Q5_1 Q6_K Q8_0 Q2_0,
+  IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_NL IQ4_XS (IQ1_M gate/up only).
+  Each GGUF needs its own pack, generated once.
+  Verified samples: APEX-MTP-Compact (Q3_K/Q4_K + MTP), APEX-I-Mini
+  (Q3_K/IQ2_S), Occamy-1.0.APEX-I-MiniPlus (Q3_K/IQ3_XXS + GDN layers).
+  Other quantized variants are expected to work but are not individually
+  tested; iq_pack.py refuses unsupported expert formats explicitly.
+
+A different Qwen3.6-35B variant needs its own pack: in the GUI press
+"一键生成 / 复用 Pack" (first run needs Python 3.10+, auto-installs deps),
+or build it by hand:
+  set STRATA_GGUF_PY=<folder containing pip's gguf package>
+  python tools\iq_pack.py --gguf <model.gguf> --out pack-<name> --compat-bf16
+
+Model statuses (measured on RTX 2060 6GB / i7-9700 / 32GB)
+  Occamy-1.0.APEX-I-MiniPlus-V2.1-Abliterated (13.7 GB)
+    runs WITHOUT MTP: ~16-19 tok/s decode; WITH the Compact donor MTP
+    (spec 2): up to ~27 tok/s, acceptance 0.84-0.90. Output divergence
+    across runs has been observed - treat cross-model MTP as experimental.
+  Qwen3.6-35B-APEX-MTP-Compact (16.1 GB)
+    no MTP 19-23 tok/s; MTP spec 2: 25-32 tok/s, acceptance ~0.75-0.86.
+    Spec 4 reached 31-37 tok/s on a fixed prompt.
+
+GUI (LlamaManager.exe)
+  Strata tab: pick package root (this folder), model, pack, profile,
+  optional MTP dir; "运行参数" page has per-field explanations and 6GB
+  presets. The launcher stops llama-server only after asking.
+  One-click pack generation calls tools\ via Python; it never touches the GPU.
+
+Command line (Occamy, from this folder)
+  engine\strata.exe --pack pack-occamy --native <Occamy.gguf> --no-ple ^
+    --tokens <ids> --expert-profile profile\profile-occamy.bin ^
+    --expert-cache auto --vram-reserve-mib 800 --prefill 2048 --max-context 4096 ^
+    --max-new 128 --kv int8 --kv-resident 0 --spec 2 --suffix-draft 0 ^
+    --pool-workers 6 --pool-affinity all --stats
+  (tokenize first: engine\tokenize\llama-tokenize.exe -m <model.gguf> -f prompt.txt --ids)
+
+Command line (Compact, with MTP)
+  set STRATA_MTP_PLAIN=1
+  ... same command with pack-apex-compact paths, plus:  --mtp mtp-apex-compact
+  (do NOT pass --mtp-max-t: it zeroes the draft count)
+
+Tuning
+  --vram-reserve-mib   the one knob per card: 6GB card 500-800, 8GB card 1500
+  24 GB RAM laptops:   set STRATA_ARENA_PIN_GIB=12 if the machine starts paging
+  stop llama.cpp servers first: Strata needs the whole GPU.
+  A higher Task-Manager VRAM percentage is NOT a goal by itself.
+
+Requirements
+  NVIDIA driver new enough for CUDA 13 (a 2025+ Game Ready/Studio driver is fine).
+  No CUDA Toolkit, Visual Studio or .NET install needed for the prebuilt engine/GUI.
+  Python 3.10+ only for building packs for NEW models (one per GGUF variant).
+
+Rebuilding from source: github.com/viosonlee/cyber-on-strata (branch apex), build-apex.cmd.

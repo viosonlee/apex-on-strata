@@ -406,6 +406,10 @@ int main(int argc, char** argv) {
         for (int dt : {20, 42}) check_grouped(gu, dt, 2560, 640, s, rng);   // the model's shape
         check_grouped(gu, 23, 1024, 512, s, rng);                           // IQ4_XS down needs n_ff % 256 == 0
     }
+    // APEX Mini and Occamy use the same IQ format in all three expert matrices.
+    // Exercise the new down dispatch at the real 2048/512 geometry.
+    check_grouped(22, 22, 2048, 512, s, rng);
+    check_grouped(18, 18, 2048, 512, s, rng);
     check_q8_1_finite(s, rng);
     if (do_bench) bench(s, rng);
     std::printf("iq_multi_parity: %d failures\n", g_fail);

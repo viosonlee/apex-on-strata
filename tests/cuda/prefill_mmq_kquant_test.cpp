@@ -86,14 +86,19 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
         ws.push_back(make_matrix(t, out_rows, cols, e, trial));
         std::copy(ws.back().begin(), ws.back().end(), w.begin() + (ptrdiff_t) ((size_t) e * eb));
     }
-    Dev dx(x.size() * 4), dsrc((size_t) rows * 4), ddst((size_t) rows * 4), db(bounds.size() * 4), dw(w.size()),
+    Dev dx(x.size() * 4), dsrc((size_t) (rows + 128) * 4), ddst((size_t) (rows + 128) * 4), db(bounds.size() * 4), dw(w.size()),
         dxq(mmq::q8_bytes(rows, cols)), dy((size_t) rows * (size_t) out_rows * 4);
-    ck(cudaMemcpy(dx.p, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
-    ck(cudaMemcpy(dsrc.p, src.data(), src.size() * 4, cudaMemcpyHostToDevice), "src");
-    ck(cudaMemcpy(ddst.p, dst.data(), dst.size() * 4, cudaMemcpyHostToDevice), "dst");
-    ck(cudaMemcpy(db.p, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice), "bounds");
-    ck(cudaMemcpy(dw.p, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
-    ck(cudaMemset(dy.p, 0xff, (size_t) rows * (size_t) out_rows * 4), "sentinel");
+    ck(cudaMemcpyAsync(dx.p, x.data(), x.size() * 4, cudaMemcpyHostToDevice, s), "x");
+    ck(cudaMemsetAsync(dsrc.p, 0, (size_t) (rows + 128) * 4, s), "src padding");
+    ck(cudaMemsetAsync(ddst.p, 0, (size_t) (rows + 128) * 4, s), "dst padding");
+    ck(cudaMemcpyAsync(dsrc.p, src.data(), src.size() * 4, cudaMemcpyHostToDevice, s), "src");
+    ck(cudaMemcpyAsync(ddst.p, dst.data(), dst.size() * 4, cudaMemcpyHostToDevice, s), "dst");
+    ck(cudaMemcpyAsync(db.p, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice, s), "bounds");
+    ck(cudaMemcpyAsync(dw.p, w.data(), w.size(), cudaMemcpyHostToDevice, s), "w");
+    // The tested stream is nonblocking: default-stream cudaMemset is not ordered
+    // before its kernels and can overwrite the result with the NaN sentinel.
+    ck(cudaMemsetAsync(dy.p, 0xff, (size_t) rows * (size_t) out_rows * 4, s), "sentinel");
+    ck(cudaMemsetAsync(dxq.p, 0, mmq::q8_bytes(rows, cols), s), "q8 padding");
     mmq::quantize((const float*) dx.p, (const int32_t*) dsrc.p, dxq.p, (int) t, cols, cols, rows, s);
     mmq::Product p;
     p.w = dw.p; p.type = (int) t; p.w_rows = out_rows; p.w_cols = cols; p.expert_bytes = eb; p.n = n;
@@ -123,7 +128,11 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
     }
     double err2 = 0, ref2 = 0, max_abs = 0, zero_max = 0;
     for (size_t i = 0; i < got.size(); ++i) {
-        if (!std::isfinite(got[i])) throw std::runtime_error(std::string(name) + ": unwritten or non-finite output");
+        if (!std::isfinite(got[i])) {
+            std::fprintf(stderr, "%s: first nonfinite at row %zu col %zu: %g (ref %g)\n", name,
+                         i / out_rows, i % out_rows, got[i], ref[i]);
+            throw std::runtime_error(std::string(name) + ": unwritten or non-finite output");
+        }
         const double d = (double) got[i] - ref[i];
         err2 += d * d; ref2 += (double) ref[i] * ref[i]; max_abs = std::max(max_abs, std::fabs(d));
     }
@@ -142,7 +151,6 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
 int main() {
     try {
         if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
-        if (mmq::supported(GGML_TYPE_Q6_K)) throw std::runtime_error("Q6_K should not be covered");
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         {
@@ -151,6 +159,8 @@ int main() {
             int trial = 0;
             for (const auto& counts : batches) {
                 const std::string tag = "-" + std::to_string(trial);
+                product(ctx, s, ("Q3_K gate/up" + tag).c_str(), GGML_TYPE_Q3_K, 1024, 2048, counts, trial);
+                product(ctx, s, ("Q3_K down" + tag).c_str(), GGML_TYPE_Q3_K, 2048, 512, counts, trial + 3);
                 product(ctx, s, ("Q4_K gate/up" + tag).c_str(), GGML_TYPE_Q4_K, 1280, 2560, counts, trial);
                 product(ctx, s, ("Q5_K gate/up" + tag).c_str(), GGML_TYPE_Q5_K, 1280, 2560, counts, trial + 5);
                 product(ctx, s, ("Q5_1 down" + tag).c_str(), GGML_TYPE_Q5_1, 2560, 640, counts, trial + 9);

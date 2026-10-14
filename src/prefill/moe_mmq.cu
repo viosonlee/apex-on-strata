@@ -124,8 +124,11 @@ bool supported(int t) {
         // (prefill.cpp's `iq_dequant_f16` + `m.gemm.f16`) instead of MMQ.  Q6_K is a K-quant like the two above,
         // so it rides the same switch, the same `mmq-instance-q6_k.cu` and the same Q8_K activations.
         case GGML_TYPE_Q6_K:
-#endif
+        // APEX fork: APEX-MTP-Compact / APEX-I-Mini run Q3_K gate/up AND down on ~31 of their 40 layers -
+        // without this case every one of those layers' prompts took the fp16 dequant fallback, the slowest path.
+        case GGML_TYPE_Q3_K:
             return true;
+#endif
         default:
             return false;
     }
@@ -212,6 +215,8 @@ void Context::run(const Product& p, void* stream) {
         // #S151-6b: without this case the `default:` below is `std::exit(1)` ("prefill mmq: type 14 is not
         // covered") - a hard throw, not a silent fallback, so `supported()` and this switch must move together.
         case GGML_TYPE_Q6_K: mul_mat_q_case<GGML_TYPE_Q6_K>(ctx, a, s); break;
+        // APEX fork: Q3_K experts (see supported() above); same move-together rule.
+        case GGML_TYPE_Q3_K: mul_mat_q_case<GGML_TYPE_Q3_K>(ctx, a, s); break;
 #endif
         default:
             std::fprintf(stderr, "prefill mmq: type %d is not covered\n", (int) t);

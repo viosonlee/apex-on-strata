@@ -577,18 +577,19 @@ private:
 // own expert count, and head_count_kv stays 2.  Keep this in step with `core::ModelGeometry` - these two
 //
 // ADAPTED 2026-10-08 for Cyber-Tiel-Coder-35B-A3B (`qwen35moe`): the architecture string and every key
-// prefix below moved from `qwen4exp.*` to `qwen35moe.*`, and block_count 40 -> 41.
-// **block_count 41 is not a slip.**  The file's `qwen35moe.block_count` really is 41, because it counts
-// `blk.40`, the MTP block (10-08 reading: 753 tensors, blk indices 0..40, `blk.41` absent).  `n_layers`
-// stays 40 - the trunk.  The guard checks the FILE's number; the layer loop runs the TRUNK's.  Keeping the
-// check at 41 (rather than presence-only) is deliberate: a 48-block qwen35moe (the 122B) or a 40-block
-// trunk-only export would otherwise load and then run silently wrong, because n_layers 40 is compiled in.
+// prefix below moved from `qwen4exp.*` to `qwen35moe.*`.
+// ADAPTED 2026-10-14 for the APEX quants (this fork): `block_count` 40 and 41 are both legitimate —
+// 41 counts `blk.40`, the MTP block (the Cyber/APEX-MTP-Compact files); 40 is a trunk-only export
+// (APEX-I-Mini ships no MTP block).  The check that actually matters is structural, not the number:
+// a 41-block file MUST carry the MTP tensors (`blk.40.nextn.*`), and a 40-block file MUST NOT carry
+// any `blk.40.*` (a trunk that silently grew a 41st layer would run wrong, which is what the original
+// 41-only guard was protecting against).  `n_layers` stays 40 - the trunk.
 // `experts`/`experts_used` stay 0: the file's 256/8 are the authority and the graph reads them.
 
 struct Qwen35MoeGuard {
-    uint32_t block_count = 41, hidden = 2048, experts = 0, experts_used = 0, head_count = 16,
-             head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
-                                  // fewer experts than the canonical 512; the graph reads the true value
+    uint32_t block_count = 0, hidden = 2048, experts = 0, experts_used = 0, head_count = 16,
+             head_count_kv = 2;   // 0 = presence-only; block_count is checked structurally below
+                                  // (40 = trunk-only, 41 = trunk + the MTP block)
 };
 
 inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& want = {}) {
@@ -613,6 +614,19 @@ inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& w
         if (r.want && v->u != r.want)
             return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
     }
+    // ---- the structural trunk/MTP check (see the note above)
+    const MetaValue* bc = g.get("qwen35moe.block_count");
+    const uint64_t blocks = bc ? bc->u : 0;
+    const bool has_mtp = g.find("blk.40.nextn.eh_proj.weight") != nullptr;
+    if (blocks == 41 && !has_mtp)
+        return "qwen35moe.block_count = 41 but the file has no MTP tensors (blk.40.nextn.*): "
+               "a 41-block trunk is not this engine's geometry";
+    if (blocks == 40 && has_mtp)
+        return "qwen35moe.block_count = 40 but the file carries an MTP block (blk.40.nextn.*): "
+               "the trunk and the MTP block disagree on the layer count";
+    if (blocks != 40 && blocks != 41)
+        return "qwen35moe.block_count = " + std::to_string(blocks) +
+               ", this engine runs a 40-layer trunk (block_count 40, or 41 with the MTP block)";
     return {}; // empty == ok
 }
 

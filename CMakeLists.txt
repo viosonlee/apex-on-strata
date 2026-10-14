@@ -1060,7 +1060,7 @@ if(STRATA_NATIVE_EXPERTS)
     # mmq-instance-q6_k.cu is what gives mul_mat_q_case<GGML_TYPE_Q6_K> a body.
     set(_strata_mmq_cuda_types ${_strata_mmq_types})
     if(STRATA_MMQ_KQUANTS)
-      list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1 q6_k)
+      list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1 q6_k q3_k)
     endif()
     foreach(_t IN LISTS _strata_mmq_cuda_types)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
@@ -1254,3 +1254,4 @@ if(STRATA_HIP_GFX906)
   endif()
   set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)
 endif()
+

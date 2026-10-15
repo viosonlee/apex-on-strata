@@ -1172,7 +1172,7 @@ if(STRATA_NATIVE_EXPERTS)
       # kernel for it before; q5_0/q5_0 (both roles Q5_0) is left out of this list since stacking the same
       # lower-precision format on both roles pushes the GPU path over this test's 3% threshold (quantization
       # noise, not a kernel bug -- see the PR).
-      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0 q4_K/q5_0 q5_0/q8_0)
+      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0 q4_K/q5_0 q5_0/q8_0 q4_0/q4_0 q4_0/q4_1 q4_1/q4_1 q4_0/q8_0)
         string(REPLACE "/" "_" _name "${_pair}")
         add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
         set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)

@@ -843,6 +843,25 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
             const float d = f16_to_f32((uint16_t) (q[0] | (q[1] << 8)));
             for (int j = 0; j < 32; ++j) h[b * 32 + j] = d * (float) (int8_t) q[2 + j];
         }
+    } else if (strata::kernels::iq_supported(t.type)) {
+        // APEX quants store the small SSM projections (ssm_alpha / ssm_beta) as Q3_K / Q4_K.  The engine's own
+        // dequantizer (iq_dequant_f32) takes every is_iq type; it reads the SOURCE as a device pointer, so the
+        // mapped GGUF bytes go up first.
+        if (h.size() % 256 != 0) {
+            std::fprintf(stderr, "strata-q36: %s is %s, not whole 256-value blocks\n", t.name.c_str(), t.type_name());
+            std::exit(1);
+        }
+        const uint64_t nbytes = strata::kernels::iq_row_bytes(t.type, (int64_t) h.size());
+        void* dsrc = nullptr;
+        float* d = nullptr;
+        CK(cudaMalloc(&dsrc, nbytes));
+        CK(cudaMemcpy(dsrc, src, nbytes, cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&d, h.size() * 4));
+        strata::kernels::iq_dequant_f32(t.type, dsrc, (int64_t) h.size(), d, nullptr);
+        CK(cudaDeviceSynchronize());
+        CK(cudaMemcpy(h.data(), d, h.size() * 4, cudaMemcpyDeviceToHost));
+        CK(cudaFree(d));
+        CK(cudaFree(dsrc));
     } else {
         std::fprintf(stderr, "strata-q36: %s is %s, expected F32, BF16, F16 or Q8_0\n", t.name.c_str(), t.type_name());
         std::exit(1);

@@ -23,4 +23,7 @@ void iq256_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const 
 void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                         float* const* out, int r0, int r1);
 
+/// ggml's quantize_row_q8_K (x86 runs the scalar reference), byte-identical, in AVX-2: n values -> n/256 block_q8_K.
+void q8k_quant_avx2(const float* x, void* y, int64_t n);
+
 }  // namespace strata::kernels::cpu

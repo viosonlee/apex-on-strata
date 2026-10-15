@@ -1429,7 +1429,7 @@ if(STRATA_NATIVE_EXPERTS)
     # (CUDA_MODULE_LOADING=EAGER), and these four took ~3.8 MB of VRAM (3 expert slots of IQ3_XXS on a P100) from every
     # model.  gfx906 (HIP: code objects load on first use) keeps them in strata_mmq.
     set(_strata_mmq_cuda_types ${_strata_mmq_types})
-    set(_strata_kq_types q4_k q5_k q5_1 q6_k)
+    set(_strata_kq_types q4_k q5_k q5_1 q6_k q3_k)
     set(_strata_kq_dso OFF)
     if(STRATA_MMQ_KQUANTS AND STRATA_HIP_GFX906)
       list(APPEND _strata_mmq_cuda_types ${_strata_kq_types})

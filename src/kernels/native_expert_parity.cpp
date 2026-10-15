@@ -46,7 +46,9 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-constexpr int64_t H = 2560, FF = 640;
+// The engine's default shapes (Qwen3.8-Flash-Next).  APEX's qwen35moe is 2048/512, where the 256-block
+// downs (Q3_K, IQ2_S, IQ3_XXS, Q5_K, Q6_K) are whole blocks; override with STRATA_PARITY_H / STRATA_PARITY_FF.
+int64_t H = 2560, FF = 640;
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
@@ -546,6 +548,9 @@ int main(int argc, char** argv) {
                              "       native_expert_parity --bf16-embd\n");
         return 2;
     }
+    // APEX fork: the shapes are the engine's default 2560/640 unless overridden (APEX qwen35moe: 2048/512).
+    if (const char* v = std::getenv("STRATA_PARITY_H")) H = std::atoll(v);
+    if (const char* v = std::getenv("STRATA_PARITY_FF")) FF = std::atoll(v);
     // #152's width check tests the opt-in rule (the multi-token kernels from one token on)
     if (std::getenv("STRATA_IQ_MT_MIN") == nullptr) {
 #ifdef _WIN32

@@ -19,8 +19,12 @@ Occamy-1.0.APEX-I-MiniPlus-V2.1-Abliterated.gguf - use it with that file.
 SUPPORTED MODELS (qwen35moe 35B-A3B family, various quantizations)
   The engine is NOT limited to the three models below. Any qwen35moe GGUF
   (40-layer trunk, 41 with MTP; hidden 2048) whose expert quantization is in
-  the GPU-supported list works: Q3_K Q4_K Q5_K Q5_1 Q6_K Q8_0 Q2_0,
-  IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_NL IQ4_XS (IQ1_M gate/up only).
+  the per-role GPU list (see the matrix in README-APEX.md, "支持范围") works:
+  Q2_0 Q3_K Q4_K Q5_K Q5_0 Q8_0 on both gate/up and down; Q5_1 Q6_K IQ4_NL
+  down only; IQ1_M IQ2_XXS IQ2_XS IQ3_S gate/up only; IQ2_S IQ3_XXS IQ4_XS
+  both. gate and up must share one format per layer. A format missing for
+  its role (e.g. IQ4_NL as gate/up, IQ1_M as down) makes the engine refuse
+  to start, naming the layer and the format.
   Each GGUF needs its own pack, generated once.
   Verified samples: APEX-MTP-Compact (Q3_K/Q4_K + MTP), APEX-I-Mini
   (Q3_K/IQ2_S), Occamy-1.0.APEX-I-MiniPlus (Q3_K/IQ3_XXS + GDN layers).

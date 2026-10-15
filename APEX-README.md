@@ -68,19 +68,31 @@ MMQ 与回退路径不是位级相同（上游已注明 batch split 非数值中
 attention heads=16 / KV heads=2、256 专家 top-8）。**不限于某个单一 GGUF 文件**——
 同一架构的 APEX、UNSLOTH、GSQ 等各种量化/微调变种都在范围内，每个 GGUF 只需生成一次 pack。
 
-**专家量化格式（GPU kernel 已覆盖并数值验证）**：
+**专家量化格式（按角色；GPU kernel 支持来自 `src/kernels/cuda/iq_kernels.cu` 的
+`STRATA_GU_FMTS` / `STRATA_D_FMTS` 与 `src/prefill/moe_mmq.cu` 的 `supported()`，
+下表与之一一对应）**：
 
-| 格式 | GGML type | 说明 |
-|---|---|---|
-| Q3_K | 11 | gate/up 和 down 都支持（MMVQ + prefill MMQ） |
-| Q4_K | 12 | 上下投影均支持 |
-| Q5_K / Q5_1 / Q6_K | 13/14/15 | K-quant 家族（`STRATA_MMQ_KQUANTS`） |
-| Q8_0 | 8 | 支持草稿层稠密矩阵 |
-| Q2_0 | 42 | 本仓库自有格式 |
-| IQ2_XXS / IQ2_XS / IQ2_S | 16/17/22 | i-quant；IQ2_S down 已加入 `STRATA_D_FMTS` |
-| **IQ3_XXS** | **18** | gate/up 和 down 都支持（Occamy 第 10–29 层在用） |
-| IQ3_S / IQ4_NL / IQ4_XS | 21/20/23 | i-quant 家族 |
-| IQ1_M | 29 | gate/up 支持（down 除外） |
+| 格式 | GGML type | gate/up | down | prefill MMQ |
+|---|---|---|---|---|
+| Q2_0 | 42 | 是 | 是 | 是 |
+| Q3_K | 11 | 是 | 是 | 是 |
+| Q4_K | 12 | 是 | 是 | 是 |
+| Q5_K | 13 | 是 | 是 | 是 |
+| Q5_0 | 6 | 是 | 是 | 否（prompt 走 fp16 去量化回退，较慢） |
+| Q5_1 | 7 | 否 | 是 | 是 |
+| Q6_K | 14 | 否 | 是 | 是 |
+| Q8_0 | 8 | 是 | 是 | 是 |
+| IQ1_M | 29 | 是 | **否**（引擎拒绝启动） | 否 |
+| IQ2_XXS | 16 | 是 | **否** | 是 |
+| IQ2_XS | 17 | 是 | **否** | 是 |
+| IQ2_S | 22 | 是 | 是 | 是 |
+| IQ3_XXS | 18 | 是 | 是 | 是 |
+| IQ3_S | 21 | 是 | **否** | 是 |
+| IQ4_NL | 20 | **否** | 是 | 是 |
+| IQ4_XS | 23 | 是 | 是 | 是 |
+
+gate 与 up 在同一层必须是同一种格式（`iq_pack.py` 的约束）。标"否"的角色若出现在
+模型里，引擎会在启动前报错并指明具体层与格式，不会输出乱码。
 
 非专家权重（注意力投影、router、GDN/SSM、嵌入、LM head）接受 F32/F16/BF16 及上述量化。
 模型不带 MTP 层时去掉 `--mtp` 即可，无性能损失；带 blk.40 的模型可用 `apex_mtp_rt.py` 提取草稿。

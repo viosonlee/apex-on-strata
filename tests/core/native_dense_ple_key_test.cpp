@@ -52,10 +52,10 @@ const char* QKV = "blk.0.attn_qkv.weight";
 constexpr uint64_t NE0 = 256, NE1 = 4;
 
 std::vector<fixture::Kv> arch_keys() {
-    return {fixture::str("general.architecture", "qwen4exp"), fixture::u32("qwen4exp.block_count", 48),
-            fixture::u32("qwen4exp.embedding_length", 2560), fixture::u32("qwen4exp.expert_count", 512),
-            fixture::u32("qwen4exp.expert_used_count", 10), fixture::u32("qwen4exp.attention.head_count", 24),
-            fixture::u32("qwen4exp.attention.head_count_kv", 2)};
+    return {fixture::str("general.architecture", "qwen35moe"), fixture::u32("qwen35moe.block_count", 40),
+            fixture::u32("qwen35moe.embedding_length", 2048), fixture::u32("qwen35moe.expert_count", 256),
+            fixture::u32("qwen35moe.expert_used_count", 8), fixture::u32("qwen35moe.attention.head_count", 16),
+            fixture::u32("qwen35moe.attention.head_count_kv", 2)};
 }
 
 // A shape-only quantized row (what iq_pack writes for a tensor the GGUF serves) and, with `bf16_key`, the key as a

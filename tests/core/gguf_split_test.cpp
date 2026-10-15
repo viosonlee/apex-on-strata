@@ -51,7 +51,7 @@ template <class F> std::vector<std::string> write_model(const fs::path& dir, F m
     std::vector<std::string> paths;
     for (int i = 0; i < 4; ++i) {
         std::vector<fixture::Kv> kv;
-        if (i == 0) kv.push_back(fixture::str("general.architecture", "qwen4exp"));
+        if (i == 0) kv.push_back(fixture::str("general.architecture", "qwen35moe"));
         for (const auto& k : fixture::split_keys((uint64_t) i, 4, total)) kv.push_back(k);
         std::vector<Tensor> ts;
         if (i == 1) ts = {{"output.weight", {64, 4}, Q8_0, 1}, {"token_embd.weight", {64, 4}, Q8_0, 2},
@@ -90,7 +90,7 @@ int real_model(const std::string& any) {
                         m.shard(i).tensors().size(), (unsigned long long) m.shard(i).data_start());
             tensors += m.shard(i).tensors().size();
         }
-        const std::string arch = strata::check_architecture(m.meta());
+        const std::string arch = strata::check_architecture(m);
         std::printf("  %zu tensors; architecture check on the metadata shard: %s\n", tensors,
                     arch.empty() ? "ok" : arch.c_str());
         int bad = arch.empty() ? 0 : 1;

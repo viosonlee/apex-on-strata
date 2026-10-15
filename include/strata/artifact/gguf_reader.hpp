@@ -592,7 +592,8 @@ struct Qwen35MoeGuard {
                                   // (40 = trunk-only, 41 = trunk + the MTP block)
 };
 
-inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& want = {}) {
+inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& want = {},
+                                      const GgufModel* model = nullptr) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
     if (arch->s != "qwen35moe") return "architecture is '" + arch->s + "', this engine requires 'qwen35moe'";
@@ -617,7 +618,9 @@ inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& w
     // ---- the structural trunk/MTP check (see the note above)
     const MetaValue* bc = g.get("qwen35moe.block_count");
     const uint64_t blocks = bc ? bc->u : 0;
-    const bool has_mtp = g.find("blk.40.nextn.eh_proj.weight") != nullptr;
+    // Metadata belongs to shard 1, but a re-split model may put the MTP marker in any shard.
+    const bool has_mtp = (model ? model->find("blk.40.nextn.eh_proj.weight")
+                               : g.find("blk.40.nextn.eh_proj.weight")) != nullptr;
     if (blocks == 41 && !has_mtp)
         return "qwen35moe.block_count = 41 but the file has no MTP tensors (blk.40.nextn.*): "
                "a 41-block trunk is not this engine's geometry";
@@ -628,6 +631,10 @@ inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& w
         return "qwen35moe.block_count = " + std::to_string(blocks) +
                ", this engine runs a 40-layer trunk (block_count 40, or 41 with the MTP block)";
     return {}; // empty == ok
+}
+
+inline std::string check_architecture(const GgufModel& model, const Qwen35MoeGuard& want = {}) {
+    return check_architecture(model.meta(), want, &model);
 }
 
 } // namespace strata
